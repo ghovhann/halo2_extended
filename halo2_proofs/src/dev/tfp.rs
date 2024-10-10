@@ -6,7 +6,7 @@ use tracing::{debug, debug_span, span::EnteredSpan};
 use crate::{
     circuit::{layouter::RegionLayouter, AssignedCell, Cell, Layouter, Region, Table, Value},
     plonk::{
-        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed,
+        Advice, Precommitted, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed,
         FloorPlanner, Instance, Selector,
     },
 };
@@ -250,6 +250,22 @@ impl<'r, F: Field> RegionLayouter<F> for TracingRegion<'r, F> {
             .map(debug_value_and_return_cell)
     }
 
+    fn assign_precommitted<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: Column<Precommitted>,
+            offset: usize,
+            to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v),
+        ) -> Result<Cell, Error> {
+        let _guard =
+            debug_span!("assign_precommitted", name = annotation(), column = ?column, offset = offset)
+                .entered();
+        debug!(target: "layouter", "Entered");
+        self.0
+            .assign_precommitted(annotation, column, offset, to)
+            .map(debug_value_and_return_cell)
+    }
+
     fn assign_advice_from_constant<'v>(
         &'v mut self,
         annotation: &'v (dyn Fn() -> String + 'v),
@@ -267,6 +283,26 @@ impl<'r, F: Field> RegionLayouter<F> for TracingRegion<'r, F> {
         debug!(target: "layouter", "Entered");
         self.0
             .assign_advice_from_constant(annotation, column, offset, constant)
+            .map(debug_value_and_return_cell)
+    }
+
+    fn assign_precommitted_from_constant<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: Column<Precommitted>,
+            offset: usize,
+            constant: Assigned<F>,
+        ) -> Result<Cell, Error> {
+        let _guard = debug_span!("assign_precommitted_from_constant",
+            name = annotation(),
+            column = ?column,
+            offset = offset,
+            constant = ?constant,
+        )
+        .entered();
+        debug!(target: "layouter", "Entered");
+        self.0
+            .assign_precommitted_from_constant(annotation, column, offset, constant)
             .map(debug_value_and_return_cell)
     }
 
@@ -289,6 +325,33 @@ impl<'r, F: Field> RegionLayouter<F> for TracingRegion<'r, F> {
         debug!(target: "layouter", "Entered");
         self.0
             .assign_advice_from_instance(annotation, instance, row, advice, offset)
+            .map(|value| {
+                if let Some(v) = value.value().into_option() {
+                    debug!(target: "assigned", value = ?v);
+                }
+                (value.cell(), value.value().cloned())
+            })
+    }
+
+    fn assign_precommitted_from_instance<'v>(
+            &mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            instance: Column<Instance>,
+            row: usize,
+            precommitted: Column<Precommitted>,
+            offset: usize,
+        ) -> Result<(Cell, Value<F>), Error> {
+        let _guard = debug_span!("assign_precommitted_from_instance",
+            name = annotation(),
+            instance = ?instance,
+            row = row,
+            precommitted = ?precommitted,
+            offset = offset,
+        )
+        .entered();
+        debug!(target: "layouter", "Entered");
+        self.0
+            .assign_precommitted_from_instance(annotation, instance, row, precommitted, offset)
             .map(|value| {
                 if let Some(v) = value.value().into_option() {
                     debug!(target: "assigned", value = ?v);
@@ -409,6 +472,28 @@ impl<'cs, F: Field, CS: Assignment<F>> Assignment<F> for TracingAssignment<'cs, 
             debug!(target: "assign_advice", name = annotation, column = ?column, row = row);
         }
         self.cs.assign_advice(|| annotation, column, row, to)
+    }
+
+    fn assign_precommitted<V, VR, A, AR>(
+            &mut self,
+            annotation: A,
+            column: Column<crate::plonk::Precommitted>,
+            row: usize,
+            to: V,
+        ) -> Result<(), Error>
+        where
+            V: FnOnce() -> Value<VR>,
+            VR: Into<Assigned<F>>,
+            A: FnOnce() -> AR,
+            AR: Into<String> 
+    {
+        let annotation = annotation().into();
+        if self.in_region {
+            debug!(target: "position", row = row);
+        } else {
+            debug!(target: "assign_precommitted", name = annotation, column = ?column, row = row);
+        }
+        self.cs.assign_precommitted(|| annotation, column, row, to)
     }
 
     fn assign_fixed<V, VR, A, AR>(

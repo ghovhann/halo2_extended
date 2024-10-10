@@ -5,7 +5,7 @@ use group::ff::Field;
 use super::{metadata, CellValue, InstanceValue, Value};
 use crate::{
     plonk::{
-        AdviceQuery, Any, Column, ColumnType, Expression, FixedQuery, Gate, InstanceQuery,
+        AdviceQuery, PrecommittedQuery, Any, Column, ColumnType, Expression, FixedQuery, Gate, InstanceQuery,
         VirtualCell,
     },
     poly::Rotation,
@@ -38,6 +38,17 @@ impl From<AdviceQuery> for AnyQuery {
         Self {
             index: query.index,
             column_type: Any::Advice,
+            column_index: query.column_index,
+            rotation: query.rotation,
+        }
+    }
+}
+
+impl From<PrecommittedQuery> for AnyQuery {
+    fn from(query: PrecommittedQuery) -> Self {
+        Self {
+            index: query.index,
+            column_type: Any::Precommitted,
             column_index: query.column_index,
             rotation: query.rotation,
         }
@@ -137,6 +148,7 @@ pub(super) fn cell_values<'a, F: Field>(
     poly: &Expression<F>,
     load_fixed: impl Fn(FixedQuery) -> Value<F> + 'a,
     load_advice: impl Fn(AdviceQuery) -> Value<F> + 'a,
+    load_precommitted: impl Fn(PrecommittedQuery) -> Value<F> + 'a,
     load_instance: impl Fn(InstanceQuery) -> Value<F> + 'a,
 ) -> Vec<(metadata::VirtualCell, String)> {
     let virtual_cells = gate.queried_cells();
@@ -145,6 +157,7 @@ pub(super) fn cell_values<'a, F: Field>(
         &|_| panic!("virtual selectors are removed during optimization"),
         &cell_value(virtual_cells, load_fixed),
         &cell_value(virtual_cells, load_advice),
+        &cell_value(virtual_cells, load_precommitted),
         &cell_value(virtual_cells, load_instance),
         &|a| a,
         &|mut a, mut b| {

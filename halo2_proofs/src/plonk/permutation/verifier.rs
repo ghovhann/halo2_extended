@@ -107,6 +107,7 @@ impl<C: CurveAffine> Evaluated<C> {
         p: &'a Argument,
         common: &'a CommonEvaluated<C>,
         advice_evals: &'a [C::Scalar],
+        precommitted_evals: &'a [C::Scalar],
         fixed_evals: &'a [C::Scalar],
         instance_evals: &'a [C::Scalar],
         l_0: C::Scalar,
@@ -163,6 +164,7 @@ impl<C: CurveAffine> Evaluated<C> {
                             .iter()
                             .map(|&column| match column.column_type() {
                                 Any::Advice => advice_evals[vk.cs.get_any_query_index(column)],
+                                Any::Precommitted => precommitted_evals[vk.cs.get_any_query_index(column)],
                                 Any::Fixed => fixed_evals[vk.cs.get_any_query_index(column)],
                                 Any::Instance => instance_evals[vk.cs.get_any_query_index(column)],
                             })
@@ -176,6 +178,7 @@ impl<C: CurveAffine> Evaluated<C> {
                             * &(C::Scalar::DELTA.pow_vartime([(chunk_index * chunk_len) as u64]));
                         for eval in columns.iter().map(|&column| match column.column_type() {
                             Any::Advice => advice_evals[vk.cs.get_any_query_index(column)],
+                            Any::Precommitted => precommitted_evals[vk.cs.get_any_query_index(column)],
                             Any::Fixed => fixed_evals[vk.cs.get_any_query_index(column)],
                             Any::Instance => instance_evals[vk.cs.get_any_query_index(column)],
                         }) {

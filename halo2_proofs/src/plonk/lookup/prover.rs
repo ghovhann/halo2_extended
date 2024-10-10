@@ -90,9 +90,11 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         coset_evaluator: &mut poly::Evaluator<Ec, C::Scalar, ExtendedLagrangeCoeff>,
         theta: ChallengeTheta<C>,
         advice_values: &'a [poly::AstLeaf<Ev, LagrangeCoeff>],
+        precommitted_values: &'a [poly::AstLeaf<Ev, LagrangeCoeff>],
         fixed_values: &'a [poly::AstLeaf<Ev, LagrangeCoeff>],
         instance_values: &'a [poly::AstLeaf<Ev, LagrangeCoeff>],
         advice_cosets: &'a [poly::AstLeaf<Ec, ExtendedLagrangeCoeff>],
+        precommitted_cosets: &'a [poly::AstLeaf<Ec, ExtendedLagrangeCoeff>],
         fixed_cosets: &'a [poly::AstLeaf<Ec, ExtendedLagrangeCoeff>],
         instance_cosets: &'a [poly::AstLeaf<Ec, ExtendedLagrangeCoeff>],
         mut rng: R,
@@ -122,6 +124,11 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
                                 .into()
                         },
                         &|query| {
+                            precommitted_values[query.column_index]
+                                .with_rotation(query.rotation)
+                                .into()
+                        },
+                        &|query| {
                             instance_values[query.column_index]
                                 .with_rotation(query.rotation)
                                 .into()
@@ -147,6 +154,11 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
                         },
                         &|query| {
                             advice_cosets[query.column_index]
+                                .with_rotation(query.rotation)
+                                .into()
+                        },
+                        &|query| {
+                            precommitted_cosets[query.column_index]
                                 .with_rotation(query.rotation)
                                 .into()
                         },

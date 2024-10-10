@@ -106,9 +106,10 @@ impl CircuitLayout {
         let (cs, selector_polys) = cs.compress_selectors(layout.selectors);
         let non_selector_fixed_columns = cs.num_fixed_columns - selector_polys.len();
 
-        // Figure out what order to render the columns in.
-        // TODO: For now, just render them in the order they were configured.
-        let total_columns = cs.num_instance_columns + cs.num_advice_columns + cs.num_fixed_columns;
+        // Add precommitted columns to the total columns count
+        let total_columns = cs.num_instance_columns + cs.num_advice_columns + cs.num_precommitted_columns + cs.num_fixed_columns;
+
+        // Define a function to calculate the column index
         let column_index = |cs: &ConstraintSystem<F>, column: RegionColumn| {
             let column: Column<Any> = match column {
                 RegionColumn::Column(col) => col,
@@ -118,16 +119,17 @@ impl CircuitLayout {
                 + match column.column_type() {
                     Any::Instance => 0,
                     Any::Advice => cs.num_instance_columns,
-                    Any::Fixed => cs.num_instance_columns + cs.num_advice_columns,
+                    Any::Precommitted => cs.num_instance_columns + cs.num_advice_columns,  // Position for precommitted
+                    Any::Fixed => cs.num_instance_columns + cs.num_advice_columns + cs.num_precommitted_columns,
                 }
         };
 
+        // Set view dimensions
         let view_width = self.view_width.unwrap_or(0..total_columns);
         let view_height = self.view_height.unwrap_or(0..n);
         let view_bottom = view_height.end;
 
-        // Prepare the grid layout. We render a red background for advice columns, white for
-        // instance columns, and blue for fixed columns (with a darker blue for selectors).
+        // Prepare the grid layout
         let root =
             drawing_area.apply_coord_spec(Cartesian2d::<RangedCoordusize, RangedCoordusize>::new(
                 view_width,
@@ -138,16 +140,20 @@ impl CircuitLayout {
             [(0, 0), (total_columns, view_bottom)],
             ShapeStyle::from(&WHITE).filled(),
         ))?;
-        root.draw(&Rectangle::new(
-            [
-                (cs.num_instance_columns, 0),
-                (cs.num_instance_columns + cs.num_advice_columns, view_bottom),
-            ],
-            ShapeStyle::from(&RED.mix(0.2)).filled(),
-        ))?;
+
+        // Define regions for precommitted columns
         root.draw(&Rectangle::new(
             [
                 (cs.num_instance_columns + cs.num_advice_columns, 0),
+                (cs.num_instance_columns + cs.num_advice_columns + cs.num_precommitted_columns, view_bottom),
+            ],
+            ShapeStyle::from(&GREEN.mix(0.2)).filled(),  // Green color for precommitted columns
+        ))?;
+
+        // Render the remaining grid for fixed columns and selectors
+        root.draw(&Rectangle::new(
+            [
+                (cs.num_instance_columns + cs.num_advice_columns + cs.num_precommitted_columns, 0),
                 (total_columns, view_bottom),
             ],
             ShapeStyle::from(&BLUE.mix(0.2)).filled(),
@@ -158,6 +164,7 @@ impl CircuitLayout {
                     (
                         cs.num_instance_columns
                             + cs.num_advice_columns
+                            + cs.num_precommitted_columns
                             + non_selector_fixed_columns,
                         0,
                     ),

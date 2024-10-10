@@ -56,6 +56,7 @@ impl Argument {
         pk: &plonk::ProvingKey<C>,
         pkey: &ProvingKey<C>,
         advice: &[Polynomial<C::Scalar, LagrangeCoeff>],
+        precommitted: &[Polynomial<C::Scalar, LagrangeCoeff>],
         fixed: &[Polynomial<C::Scalar, LagrangeCoeff>],
         instance: &[Polynomial<C::Scalar, LagrangeCoeff>],
         beta: ChallengeBeta<C>,
@@ -101,6 +102,7 @@ impl Argument {
             for (&column, permuted_column_values) in columns.iter().zip(permutations.iter()) {
                 let values = match column.column_type() {
                     Any::Advice => advice,
+                    Any::Precommitted => precommitted,
                     Any::Fixed => fixed,
                     Any::Instance => instance,
                 };
@@ -124,6 +126,7 @@ impl Argument {
                 let omega = domain.get_omega();
                 let values = match column.column_type() {
                     Any::Advice => advice,
+                    Any::Precommitted => precommitted,
                     Any::Fixed => fixed,
                     Any::Instance => instance,
                 };
@@ -201,6 +204,7 @@ impl<C: CurveAffine, Ev: Copy + Send + Sync> Committed<C, Ev> {
         pk: &'a plonk::ProvingKey<C>,
         p: &'a Argument,
         advice_cosets: &'a [poly::AstLeaf<Ev, ExtendedLagrangeCoeff>],
+        precommitted_cosets: &'a [poly::AstLeaf<Ev, ExtendedLagrangeCoeff>],
         fixed_cosets: &'a [poly::AstLeaf<Ev, ExtendedLagrangeCoeff>],
         instance_cosets: &'a [poly::AstLeaf<Ev, ExtendedLagrangeCoeff>],
         permutation_cosets: &'a [poly::AstLeaf<Ev, ExtendedLagrangeCoeff>],
@@ -280,6 +284,7 @@ impl<C: CurveAffine, Ev: Copy + Send + Sync> Committed<C, Ev> {
                             .iter()
                             .map(|&column| match column.column_type() {
                                 Any::Advice => &advice_cosets[column.index()],
+                                Any::Precommitted => &precommitted_cosets[column.index()],
                                 Any::Fixed => &fixed_cosets[column.index()],
                                 Any::Instance => &instance_cosets[column.index()],
                             })
@@ -295,6 +300,7 @@ impl<C: CurveAffine, Ev: Copy + Send + Sync> Committed<C, Ev> {
                             * &(C::Scalar::DELTA.pow_vartime([(chunk_index * chunk_len) as u64]));
                         for values in columns.iter().map(|&column| match column.column_type() {
                             Any::Advice => &advice_cosets[column.index()],
+                            Any::Precommitted => &precommitted_cosets[column.index()],
                             Any::Fixed => &fixed_cosets[column.index()],
                             Any::Instance => &instance_cosets[column.index()],
                         }) {

@@ -205,7 +205,7 @@ pub fn slot_in_biggest_advice_first(
             .columns()
             .iter()
             .filter(|c| match c {
-                RegionColumn::Column(c) => matches!(c.column_type(), Any::Advice),
+                RegionColumn::Column(c) => matches!(c.column_type(), Any::Advice | Any::Precommitted),
                 _ => false,
             })
             .count();

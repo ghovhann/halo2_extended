@@ -9,7 +9,7 @@ use crate::{
         Cell, Layouter, Region, RegionIndex, RegionStart, Table, TableLayouter, Value,
     },
     plonk::{
-        Advice, Any, Assigned, Assignment, Circuit, Column, Error, Fixed, FloorPlanner, Instance,
+        Advice, Precommitted, Any, Assigned, Assignment, Circuit, Column, Error, Fixed, FloorPlanner, Instance,
         Selector, TableColumn,
     },
 };
@@ -119,7 +119,7 @@ impl FloorPlanner for V1 {
         if constant_positions().count() < plan.constants.len() {
             return Err(Error::NotEnoughColumnsForConstants);
         }
-        for ((fixed_column, fixed_row), (value, advice)) in
+        for ((fixed_column, fixed_row), (value, cell)) in
             constant_positions().zip(plan.constants.into_iter())
         {
             plan.cs.assign_fixed(
@@ -131,8 +131,8 @@ impl FloorPlanner for V1 {
             plan.cs.copy(
                 fixed_column.into(),
                 fixed_row,
-                advice.column,
-                *plan.regions[*advice.region_index] + advice.row_offset,
+                cell.column,
+                *plan.regions[*cell.region_index] + cell.row_offset,
             )?;
         }
 
@@ -395,6 +395,27 @@ impl<'r, 'a, F: Field, CS: Assignment<F> + 'a> RegionLayouter<F> for V1Region<'r
         })
     }
 
+    fn assign_precommitted<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: Column<Precommitted>,
+            offset: usize,
+            to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v),
+        ) -> Result<Cell, Error> {
+        self.plan.cs.assign_precommitted(
+            annotation,
+            column,
+            *self.plan.regions[*self.region_index] + offset,
+            to,
+        )?;
+
+        Ok(Cell {
+            region_index: self.region_index,
+            row_offset: offset,
+            column: column.into(),
+        })
+    }
+
     fn assign_advice_from_constant<'v>(
         &'v mut self,
         annotation: &'v (dyn Fn() -> String + 'v),
@@ -409,6 +430,20 @@ impl<'r, 'a, F: Field, CS: Assignment<F> + 'a> RegionLayouter<F> for V1Region<'r
         Ok(advice)
     }
 
+    fn assign_precommitted_from_constant<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: Column<Precommitted>,
+            offset: usize,
+            constant: Assigned<F>,
+        ) -> Result<Cell, Error> {
+        let precommitted =
+            self.assign_precommitted(annotation, column, offset, &mut || Value::known(constant))?;
+        self.constrain_constant(precommitted, constant)?;
+
+        Ok(precommitted)
+    }
+
     fn assign_advice_from_instance<'v>(
         &mut self,
         annotation: &'v (dyn Fn() -> String + 'v),
@@ -420,6 +455,28 @@ impl<'r, 'a, F: Field, CS: Assignment<F> + 'a> RegionLayouter<F> for V1Region<'r
         let value = self.plan.cs.query_instance(instance, row)?;
 
         let cell = self.assign_advice(annotation, advice, offset, &mut || value.to_field())?;
+
+        self.plan.cs.copy(
+            cell.column,
+            *self.plan.regions[*cell.region_index] + cell.row_offset,
+            instance.into(),
+            row,
+        )?;
+
+        Ok((cell, value))
+    }
+
+    fn assign_precommitted_from_instance<'v>(
+            &mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            instance: Column<Instance>,
+            row: usize,
+            precommitted: Column<Precommitted>,
+            offset: usize,
+        ) -> Result<(Cell, Value<F>), Error> {
+        let value = self.plan.cs.query_instance(instance, row)?;
+
+        let cell = self.assign_precommitted(annotation, precommitted, offset, &mut || value.to_field())?;
 
         self.plan.cs.copy(
             cell.column,

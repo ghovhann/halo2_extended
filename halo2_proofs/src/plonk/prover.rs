@@ -125,20 +125,25 @@ pub fn create_proof<
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    struct AdviceSingle<C: CurveAffine> {
+    struct AdvicePrecommittedSingle<C: CurveAffine> {
         pub advice_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
         pub advice_polys: Vec<Polynomial<C::Scalar, Coeff>>,
         pub advice_cosets: Vec<Polynomial<C::Scalar, ExtendedLagrangeCoeff>>,
         pub advice_blinds: Vec<Blind<C::Scalar>>,
+        pub precommitted_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
+        pub precommitted_polys: Vec<Polynomial<C::Scalar, Coeff>>,
+        pub precommitted_cosets: Vec<Polynomial<C::Scalar, ExtendedLagrangeCoeff>>,
+        pub precommitted_blinds: Vec<Blind<C::Scalar>>,
     }
 
-    let advice: Vec<AdviceSingle<C>> = circuits
+    let advice_and_precommitted: Vec<AdvicePrecommittedSingle<C>> = circuits
         .iter()
         .zip(instances.iter())
-        .map(|(circuit, instances)| -> Result<AdviceSingle<C>, Error> {
+        .map(|(circuit, instances)| -> Result<AdvicePrecommittedSingle<C>, Error> {
             struct WitnessCollection<'a, F: Field> {
                 k: u32,
                 pub advice: Vec<Polynomial<Assigned<F>, LagrangeCoeff>>,
+                pub precommitted: Vec<Polynomial<Assigned<F>, LagrangeCoeff>>,
                 instances: &'a [&'a [F]],
                 usable_rows: RangeTo<usize>,
                 _marker: std::marker::PhantomData<F>,
@@ -214,6 +219,32 @@ pub fn create_proof<
                     Ok(())
                 }
 
+                fn assign_precommitted<V, VR, A, AR>(
+                        &mut self,
+                        annotation: A,
+                        column: Column<super::Precommitted>,
+                        row: usize,
+                        to: V,
+                    ) -> Result<(), Error>
+                    where
+                        V: FnOnce() -> Value<VR>,
+                        VR: Into<Assigned<F>>,
+                        A: FnOnce() -> AR,
+                        AR: Into<String> 
+                {
+                    if !self.usable_rows.contains(&row) {
+                        return Err(Error::not_enough_rows_available(self.k));
+                    }
+
+                    *self
+                        .precommitted
+                        .get_mut(column.index())
+                        .and_then(|v| v.get_mut(row))
+                        .ok_or(Error::BoundsFailure)? = to().into_field().assign()?;
+
+                    Ok(())
+                }
+
                 fn assign_fixed<V, VR, A, AR>(
                     &mut self,
                     _: A,
@@ -271,6 +302,7 @@ pub fn create_proof<
             let mut witness = WitnessCollection {
                 k: params.k,
                 advice: vec![domain.empty_lagrange_assigned(); meta.num_advice_columns],
+                precommitted: vec![domain.empty_lagrange_assigned(); meta.num_precommitted_columns],
                 instances,
                 // The prover will not be allowed to assign values to advice
                 // cells that exist within inactive rows, which include some
@@ -327,11 +359,55 @@ pub fn create_proof<
                 .map(|poly| domain.coeff_to_extended(poly.clone()))
                 .collect();
 
-            Ok(AdviceSingle {
+
+            let mut precommitted = batch_invert_assigned(witness.precommitted);
+
+            // Add blinding factors to precommitted columns
+            for precommitted in &mut precommitted {
+                for cell in &mut precommitted[unusable_rows_start..] {
+                    *cell = C::Scalar::random(&mut rng);
+                }
+            }
+
+            // Compute commitments to precommitted column polynomials
+            let precommitted_blinds: Vec<_> = precommitted
+                .iter()
+                .map(|_| Blind(C::Scalar::random(&mut rng)))
+                .collect();
+            let precommitted_commitments_projective: Vec<_> = precommitted
+                .iter()
+                .zip(precommitted_blinds.iter())
+                .map(|(poly, blind)| params.commit_lagrange(poly, *blind))
+                .collect();
+            let mut precommitted_commitments = vec![C::identity(); precommitted_commitments_projective.len()];
+            C::Curve::batch_normalize(&precommitted_commitments_projective, &mut precommitted_commitments);
+            let precommitted_commitments = precommitted_commitments;
+            drop(precommitted_commitments_projective);
+
+            for commitment in &precommitted_commitments {
+                transcript.write_point(*commitment)?;
+            }
+
+            let precommitted_polys: Vec<_> = precommitted
+                .clone()
+                .into_iter()
+                .map(|poly| domain.lagrange_to_coeff(poly))
+                .collect();
+
+            let precommitted_cosets: Vec<_> = precommitted_polys
+                .iter()
+                .map(|poly| domain.coeff_to_extended(poly.clone()))
+                .collect();
+
+            Ok(AdvicePrecommittedSingle {
                 advice_values: advice,
                 advice_polys,
                 advice_cosets,
                 advice_blinds,
+                precommitted_values: precommitted,
+                precommitted_polys,
+                precommitted_cosets,
+                precommitted_blinds,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -347,7 +423,7 @@ pub fn create_proof<
         .collect();
 
     // Register advice values with the polynomial evaluator.
-    let advice_values: Vec<_> = advice
+    let advice_values: Vec<_> = advice_and_precommitted
         .iter()
         .map(|advice| {
             advice
@@ -357,6 +433,18 @@ pub fn create_proof<
                 .collect::<Vec<_>>()
         })
         .collect();
+
+    // Register precommitted values with the polynomial evaluator.
+    let precommitted_values: Vec<_> = advice_and_precommitted
+    .iter()
+    .map(|precommitted| {
+        precommitted
+            .precommitted_values
+            .iter()
+            .map(|poly| value_evaluator.register_poly(poly.clone()))
+            .collect::<Vec<_>>()
+    })
+    .collect();
 
     // Register instance values with the polynomial evaluator.
     let instance_values: Vec<_> = instance
@@ -381,7 +469,7 @@ pub fn create_proof<
         .collect();
 
     // Register advice cosets with the polynomial evaluator.
-    let advice_cosets: Vec<_> = advice
+    let advice_cosets: Vec<_> = advice_and_precommitted
         .iter()
         .map(|advice| {
             advice
@@ -391,6 +479,18 @@ pub fn create_proof<
                 .collect::<Vec<_>>()
         })
         .collect();
+
+    // Register precommitted cosets with the polynomial evaluator.
+    let precommitted_cosets: Vec<_> = advice_and_precommitted
+    .iter()
+    .map(|precommitted| {
+        precommitted
+            .precommitted_cosets
+            .iter()
+            .map(|poly| coset_evaluator.register_poly(poly.clone()))
+            .collect::<Vec<_>>()
+    })
+    .collect();
 
     // Register instance cosets with the polynomial evaluator.
     let instance_cosets: Vec<_> = instance
@@ -425,7 +525,9 @@ pub fn create_proof<
         .zip(instance_cosets.iter())
         .zip(advice_values.iter())
         .zip(advice_cosets.iter())
-        .map(|(((instance_values, instance_cosets), advice_values), advice_cosets)| -> Result<Vec<_>, Error> {
+        .zip(precommitted_values.iter())
+        .zip(precommitted_cosets.iter())
+        .map(|(((((instance_values, instance_cosets), advice_values), advice_cosets), precommitted_values), precommitted_cosets)| -> Result<Vec<_>, Error> {
             // Construct and commit to permuted values for each lookup
             pk.vk
                 .cs
@@ -440,9 +542,11 @@ pub fn create_proof<
                         &mut coset_evaluator,
                         theta,
                         advice_values,
+                        precommitted_values,
                         &fixed_values,
                         instance_values,
                         advice_cosets,
+                        precommitted_cosets,
                         &fixed_cosets,
                         instance_cosets,
                         &mut rng,
@@ -462,13 +566,14 @@ pub fn create_proof<
     // Commit to permutations.
     let permutations: Vec<permutation::prover::Committed<C, _>> = instance
         .iter()
-        .zip(advice.iter())
-        .map(|(instance, advice)| {
+        .zip(advice_and_precommitted.iter())
+        .map(|(instance, advice_and_precommitted)| {
             pk.vk.cs.permutation.commit(
                 params,
                 pk,
                 &pk.permutation,
-                &advice.advice_values,
+                &advice_and_precommitted.advice_values,
+                &advice_and_precommitted.precommitted_values,
                 &pk.fixed_values,
                 &instance.instance_values,
                 beta,
@@ -511,12 +616,14 @@ pub fn create_proof<
     let (permutations, permutation_expressions): (Vec<_>, Vec<_>) = permutations
         .into_iter()
         .zip(advice_cosets.iter())
+        .zip(precommitted_cosets.iter())
         .zip(instance_cosets.iter())
-        .map(|((permutation, advice), instance)| {
+        .map(|(((permutation, advice), precommitted_cosets), instance)| {
             permutation.construct(
                 pk,
                 &pk.vk.cs.permutation,
                 advice,
+                precommitted_cosets,
                 &fixed_cosets,
                 instance,
                 &permutation_cosets,
@@ -542,11 +649,12 @@ pub fn create_proof<
 
     let expressions = advice_cosets
         .iter()
+        .zip(precommitted_cosets.iter())
         .zip(instance_cosets.iter())
         .zip(permutation_expressions.into_iter())
         .zip(lookup_expressions.into_iter())
         .flat_map(
-            |(((advice_cosets, instance_cosets), permutation_expressions), lookup_expressions)| {
+            |((((advice_cosets, precommitted_cosets), instance_cosets), permutation_expressions), lookup_expressions)| {
                 let fixed_cosets = &fixed_cosets;
                 iter::empty()
                     // Custom constraints
@@ -562,6 +670,11 @@ pub fn create_proof<
                                 },
                                 &|query| {
                                     advice_cosets[query.column_index]
+                                        .with_rotation(query.rotation)
+                                        .into()
+                                },
+                                &|query| {
+                                    precommitted_cosets[query.column_index]
                                         .with_rotation(query.rotation)
                                         .into()
                                 },
@@ -619,7 +732,7 @@ pub fn create_proof<
     }
 
     // Compute and hash advice evals for each circuit instance
-    for advice in advice.iter() {
+    for advice in advice_and_precommitted.iter() {
         // Evaluate polynomials at omega^i x
         let advice_evals: Vec<_> = meta
             .advice_queries
@@ -634,6 +747,26 @@ pub fn create_proof<
 
         // Hash each advice column evaluation
         for eval in advice_evals.iter() {
+            transcript.write_scalar(*eval)?;
+        }
+    }
+
+    // Compute and hash precommitted evals for each circuit instance
+    for precommitted in advice_and_precommitted.iter() {
+        // Evaluate polynomials at omega^i x
+        let precommitted_evals: Vec<_> = meta
+            .precommitted_queries
+            .iter()
+            .map(|&(column, at)| {
+                eval_polynomial(
+                    &precommitted.precommitted_polys[column.index()],
+                    domain.rotate_omega(*x, at),
+                )
+            })
+            .collect();
+
+        // Hash each precommitted column evaluation
+        for eval in precommitted_evals.iter() {
             transcript.write_scalar(*eval)?;
         }
     }
@@ -676,10 +809,11 @@ pub fn create_proof<
 
     let instances = instance
         .iter()
-        .zip(advice.iter())
+        .zip(advice_and_precommitted.iter())
+        .zip(advice_and_precommitted.iter())
         .zip(permutations.iter())
         .zip(lookups.iter())
-        .flat_map(|(((instance, advice), permutation), lookups)| {
+        .flat_map(|((((instance, advice), precommitted), permutation), lookups)| {
             iter::empty()
                 .chain(
                     pk.vk
@@ -701,6 +835,17 @@ pub fn create_proof<
                             point: domain.rotate_omega(*x, at),
                             poly: &advice.advice_polys[column.index()],
                             blind: advice.advice_blinds[column.index()],
+                        }),
+                )
+                .chain(
+                    pk.vk
+                        .cs
+                        .precommitted_queries
+                        .iter()
+                        .map(move |&(column, at)| ProverQuery {
+                            point: domain.rotate_omega(*x, at),
+                            poly: &precommitted.precommitted_polys[column.index()],
+                            blind: precommitted.precommitted_blinds[column.index()],
                         }),
                 )
                 .chain(permutation.open(pk, x))

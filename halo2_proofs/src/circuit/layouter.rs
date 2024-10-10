@@ -8,7 +8,7 @@ use ff::Field;
 
 pub use super::table_layouter::TableLayouter;
 use super::{Cell, RegionIndex, Value};
-use crate::plonk::{Advice, Any, Assigned, Column, Error, Fixed, Instance, Selector};
+use crate::plonk::{Advice, Any, Assigned, Column, Error, Fixed, Instance, Precommitted, Selector};
 
 /// Helper trait for implementing a custom [`Layouter`].
 ///
@@ -58,6 +58,15 @@ pub trait RegionLayouter<F: Field>: fmt::Debug {
         to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v),
     ) -> Result<Cell, Error>;
 
+    /// Assign an precommitted column value (witness)
+    fn assign_precommitted<'v>(
+        &'v mut self,
+        annotation: &'v (dyn Fn() -> String + 'v),
+        column: Column<Precommitted>,
+        offset: usize,
+        to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v),
+    ) -> Result<Cell, Error>;
+
     /// Assigns a constant value to the column `advice` at `offset` within this region.
     ///
     /// The constant value will be assigned to a cell within one of the fixed columns
@@ -68,6 +77,21 @@ pub trait RegionLayouter<F: Field>: fmt::Debug {
         &'v mut self,
         annotation: &'v (dyn Fn() -> String + 'v),
         column: Column<Advice>,
+        offset: usize,
+        constant: Assigned<F>,
+    ) -> Result<Cell, Error>;
+
+
+    /// Assigns a constant value to the column `precommitted` at `offset` within this region.
+    ///
+    /// The constant value will be assigned to a cell within one of the fixed columns
+    /// configured via `ConstraintSystem::enable_constant`.
+    ///
+    /// Returns the precommitted cell that has been equality-constrained to the constant.
+    fn assign_precommitted_from_constant<'v>(
+        &'v mut self,
+        annotation: &'v (dyn Fn() -> String + 'v),
+        column: Column<Precommitted>,
         offset: usize,
         constant: Assigned<F>,
     ) -> Result<Cell, Error>;
@@ -83,6 +107,20 @@ pub trait RegionLayouter<F: Field>: fmt::Debug {
         instance: Column<Instance>,
         row: usize,
         advice: Column<Advice>,
+        offset: usize,
+    ) -> Result<(Cell, Value<F>), Error>;
+
+    /// Assign the value of the instance column's cell at absolute location
+    /// `row` to the column `precommitted` at `offset` within this region.
+    ///
+    /// Returns the precommitted cell that has been equality-constrained to the
+    /// instance cell, and its value if known.
+    fn assign_precommitted_from_instance<'v>(
+        &mut self,
+        annotation: &'v (dyn Fn() -> String + 'v),
+        instance: Column<Instance>,
+        row: usize,
+        precommitted: Column<Precommitted>,
         offset: usize,
     ) -> Result<(Cell, Value<F>), Error>;
 
@@ -214,6 +252,23 @@ impl<F: Field> RegionLayouter<F> for RegionShape {
         })
     }
 
+    fn assign_precommitted<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: Column<Precommitted>,
+            offset: usize,
+            to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v),
+        ) -> Result<Cell, Error> {
+        self.columns.insert(Column::<Any>::from(column).into());
+        self.row_count = cmp::max(self.row_count, offset + 1);
+
+        Ok(Cell {
+            region_index: self.region_index,
+            row_offset: offset,
+            column: column.into(),
+        })
+    }
+
     fn assign_advice_from_constant<'v>(
         &'v mut self,
         annotation: &'v (dyn Fn() -> String + 'v),
@@ -223,6 +278,17 @@ impl<F: Field> RegionLayouter<F> for RegionShape {
     ) -> Result<Cell, Error> {
         // The rest is identical to witnessing an advice cell.
         self.assign_advice(annotation, column, offset, &mut || Value::known(constant))
+    }
+
+    fn assign_precommitted_from_constant<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: Column<Precommitted>,
+            offset: usize,
+            constant: Assigned<F>,
+        ) -> Result<Cell, Error> {
+        // The rest is identical to witnessing an precommitted cell.
+        self.assign_precommitted(annotation, column, offset, &mut || Value::known(constant))
     }
 
     fn assign_advice_from_instance<'v>(
@@ -241,6 +307,27 @@ impl<F: Field> RegionLayouter<F> for RegionShape {
                 region_index: self.region_index,
                 row_offset: offset,
                 column: advice.into(),
+            },
+            Value::unknown(),
+        ))
+    }
+
+    fn assign_precommitted_from_instance<'v>(
+            &mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            instance: Column<Instance>,
+            row: usize,
+            precommitted: Column<Precommitted>,
+            offset: usize,
+        ) -> Result<(Cell, Value<F>), Error> {
+        self.columns.insert(Column::<Any>::from(precommitted).into());
+        self.row_count = cmp::max(self.row_count, offset + 1);
+
+        Ok((
+            Cell {
+                region_index: self.region_index,
+                row_offset: offset,
+                column: precommitted.into(),
             },
             Value::unknown(),
         ))

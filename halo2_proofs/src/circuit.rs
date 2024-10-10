@@ -4,7 +4,7 @@ use std::{fmt, marker::PhantomData};
 
 use ff::Field;
 
-use crate::plonk::{Advice, Any, Assigned, Column, Error, Fixed, Instance, Selector, TableColumn};
+use crate::plonk::{Advice, Any, Assigned, Column, Error, Fixed, Instance, Precommitted, Selector, TableColumn};
 
 mod value;
 pub use value::Value;
@@ -166,6 +166,33 @@ where
     }
 }
 
+impl<V: Clone, F: Field> AssignedCell<V, F>
+where
+    for<'v> Assigned<F>: From<&'v V>,
+{
+    /// Copies the value to a given precommitted cell and constrains them to be equal.
+    ///
+    /// Returns an error if either this cell or the given cell are in columns
+    /// where equality has not been enabled.
+    pub fn copy_precommitted<A, AR>(
+        &self,
+        annotation: A,
+        region: &mut Region<'_, F>,
+        column: Column<Precommitted>,
+        offset: usize,
+    ) -> Result<Self, Error>
+    where
+        A: Fn() -> AR,
+        AR: Into<String>,
+    {
+        let assigned_cell =
+            region.assign_precommitted(annotation, column, offset, || self.value.clone())?;
+        region.constrain_equal(assigned_cell.cell(), self.cell())?;
+
+        Ok(assigned_cell)
+    }
+}
+
 /// A region of the circuit in which a [`Chip`] can assign cells.
 ///
 /// Inside a region, the chip may freely use relative offsets; the [`Layouter`] will
@@ -237,6 +264,39 @@ impl<'r, F: Field> Region<'r, F> {
         })
     }
 
+    /// Assign an precommitted column value (witness).
+    ///
+    /// Even though `to` has `FnMut` bounds, it is guaranteed to be called at most once.
+    pub fn assign_precommitted<'v, V, VR, A, AR>(
+        &'v mut self,
+        annotation: A,
+        column: Column<Precommitted>,
+        offset: usize,
+        mut to: V,
+    ) -> Result<AssignedCell<VR, F>, Error>
+    where
+        V: FnMut() -> Value<VR> + 'v,
+        for<'vr> Assigned<F>: From<&'vr VR>,
+        A: Fn() -> AR,
+        AR: Into<String>,
+    {
+        let mut value = Value::unknown();
+        let cell =
+            self.region
+                .assign_precommitted(&|| annotation().into(), column, offset, &mut || {
+                    let v = to();
+                    let value_f = v.to_field();
+                    value = v;
+                    value_f
+                })?;
+
+        Ok(AssignedCell {
+            value,
+            cell,
+            _marker: PhantomData,
+        })
+    }
+
     /// Assigns a constant value to the column `advice` at `offset` within this region.
     ///
     /// The constant value will be assigned to a cell within one of the fixed columns
@@ -256,6 +316,38 @@ impl<'r, F: Field> Region<'r, F> {
         AR: Into<String>,
     {
         let cell = self.region.assign_advice_from_constant(
+            &|| annotation().into(),
+            column,
+            offset,
+            (&constant).into(),
+        )?;
+
+        Ok(AssignedCell {
+            value: Value::known(constant),
+            cell,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Assigns a constant value to the column `precommitted` at `offset` within this region.
+    ///
+    /// The constant value will be assigned to a cell within one of the fixed columns
+    /// configured via `ConstraintSystem::enable_constant`.
+    ///
+    /// Returns the precommitted cell.
+    pub fn assign_precommitted_from_constant<VR, A, AR>(
+        &mut self,
+        annotation: A,
+        column: Column<Precommitted>,
+        offset: usize,
+        constant: VR,
+    ) -> Result<AssignedCell<VR, F>, Error>
+    where
+        for<'vr> Assigned<F>: From<&'vr VR>,
+        A: Fn() -> AR,
+        AR: Into<String>,
+    {
+        let cell = self.region.assign_precommitted_from_constant(
             &|| annotation().into(),
             column,
             offset,
@@ -290,6 +382,37 @@ impl<'r, F: Field> Region<'r, F> {
             instance,
             row,
             advice,
+            offset,
+        )?;
+
+        Ok(AssignedCell {
+            value,
+            cell,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Assign the value of the instance column's cell at absolute location
+    /// `row` to the column `precommitted` at `offset` within this region.
+    ///
+    /// Returns the precommitted cell, and its value if known.
+    pub fn assign_precommitted_from_instance<A, AR>(
+        &mut self,
+        annotation: A,
+        instance: Column<Instance>,
+        row: usize,
+        precommitted: Column<Precommitted>,
+        offset: usize,
+    ) -> Result<AssignedCell<F, F>, Error>
+    where
+        A: Fn() -> AR,
+        AR: Into<String>,
+    {
+        let (cell, value) = self.region.assign_precommitted_from_instance(
+            &|| annotation().into(),
+            instance,
+            row,
+            precommitted,
             offset,
         )?;
 

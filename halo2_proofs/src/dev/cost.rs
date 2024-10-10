@@ -14,8 +14,7 @@ use group::prime::PrimeGroup;
 use crate::{
     circuit::{layouter::RegionColumn, Value},
     plonk::{
-        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed,
-        FloorPlanner, Instance, Selector,
+        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed, FloorPlanner, Instance, Precommitted, Selector
     },
     poly::Rotation,
 };
@@ -30,9 +29,12 @@ pub struct CircuitCost<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> {
     max_deg: usize,
     /// Number of advice columns.
     advice_columns: usize,
+    /// Number of precommitted columns.
+    precommitted_columns: usize,
     /// Number of direct queries for each column type.
     instance_queries: usize,
     advice_queries: usize,
+    precommitted_queries: usize,
     fixed_queries: usize,
     /// Number of lookup arguments.
     lookups: usize,
@@ -44,10 +46,13 @@ pub struct CircuitCost<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> {
     max_rows: usize,
     /// Maximum rows used over all advice columns
     max_advice_rows: usize,
+    /// Maximum rows used over all precommitted columns
+    max_precommitted_rows: usize,
     /// Maximum rows used over all fixed columns
     max_fixed_rows: usize,
     num_fixed_columns: usize,
     num_advice_columns: usize,
+    num_precommitted_columns: usize,
     num_instance_columns: usize,
     num_total_columns: usize,
 
@@ -82,6 +87,8 @@ pub(crate) struct Layout {
     pub(crate) total_rows: usize,
     /// Total advice rows
     pub(crate) total_advice_rows: usize,
+    /// Total precommitted rows
+    pub(crate) total_precommitted_rows: usize,
     /// Total fixed rows
     pub(crate) total_fixed_rows: usize,
     /// Any cells assigned outside of a region.
@@ -101,6 +108,7 @@ impl Layout {
             current_region: None,
             total_rows: 0,
             total_advice_rows: 0,
+            total_precommitted_rows: 0,
             total_fixed_rows: 0,
             /// Any cells assigned outside of a region.
             loose_cells: vec![],
@@ -118,6 +126,7 @@ impl Layout {
         if let RegionColumn::Column(col) = column {
             match col.column_type() {
                 Any::Advice => self.total_advice_rows = cmp::max(self.total_advice_rows, row + 1),
+                Any::Precommitted => self.total_precommitted_rows= cmp::max(self.total_precommitted_rows, row + 1),
                 Any::Fixed => self.total_fixed_rows = cmp::max(self.total_fixed_rows, row + 1),
                 _ => {}
             }
@@ -204,6 +213,23 @@ impl<F: Field> Assignment<F> for Layout {
         Ok(())
     }
 
+    fn assign_precommitted<V, VR, A, AR>(
+            &mut self,
+            annotation: A,
+            column: Column<Precommitted>,
+            row: usize,
+            to: V,
+        ) -> Result<(), Error>
+        where
+            V: FnOnce() -> Value<VR>,
+            VR: Into<Assigned<F>>,
+            A: FnOnce() -> AR,
+            AR: Into<String> 
+    {
+        self.update(Column::<Any>::from(column).into(), row);
+        Ok(())
+    }
+
     fn assign_fixed<V, VR, A, AR>(
         &mut self,
         _: A,
@@ -282,6 +308,11 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
                     .iter()
                     .map(|(c, r)| (Column::<Any>::from(*c), *r)),
             )
+            .chain(
+                cs.precommitted_queries
+                    .iter()
+                    .map(|(c, r)| (Column::<Any>::from(*c), *r)),
+            )
             .chain(cs.instance_queries.iter().map(|(c, r)| ((*c).into(), *r)))
             .chain(cs.fixed_queries.iter().map(|(c, r)| ((*c).into(), *r)))
             .chain(
@@ -319,8 +350,10 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
             k,
             max_deg,
             advice_columns: cs.num_advice_columns,
+            precommitted_columns: cs.num_precommitted_columns,
             instance_queries: cs.instance_queries.len(),
             advice_queries: cs.advice_queries.len(),
+            precommitted_queries: cs.precommitted_queries.len(),
             fixed_queries: cs.fixed_queries.len(),
             lookups: cs.lookups.len(),
             permutation_cols,
@@ -328,12 +361,15 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
             _marker: PhantomData::default(),
             max_rows: layout.total_rows,
             max_advice_rows: layout.total_advice_rows,
+            max_precommitted_rows: layout.total_precommitted_rows,
             max_fixed_rows: layout.total_fixed_rows,
             num_advice_columns: cs.num_advice_columns,
+            num_precommitted_columns: cs.num_precommitted_columns,
             num_fixed_columns: cs.num_fixed_columns,
             num_instance_columns: cs.num_instance_columns,
             num_total_columns: cs.num_instance_columns
                 + cs.num_advice_columns
+                + cs.num_precommitted_columns
                 + cs.num_fixed_columns,
         }
     }
@@ -354,6 +390,7 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
             // - 1 eval per advice column query per instance
             instance: ProofContribution::new(0, self.instance_queries),
             advice: ProofContribution::new(self.advice_columns, self.advice_queries),
+            precommitted: ProofContribution::new(self.precommitted_columns, self.precommitted_queries),
 
             // Lookup arguments:
             // - 3 commitments per lookup argument per instance
@@ -382,6 +419,7 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
             // - 1 eval per fixed column query
             instance: marginal.instance * instances,
             advice: marginal.advice * instances,
+            precommitted: marginal.precommitted * instances,
             fixed: ProofContribution::new(0, self.fixed_queries),
 
             // Lookup arguments:
@@ -463,6 +501,7 @@ impl Mul<usize> for ProofContribution {
 pub struct MarginalProofSize<G: PrimeGroup> {
     instance: ProofContribution,
     advice: ProofContribution,
+    precommitted: ProofContribution,
     lookups: ProofContribution,
     equality: ProofContribution,
     _marker: PhantomData<G>,
@@ -475,6 +514,7 @@ impl<G: PrimeGroup> From<MarginalProofSize<G>> for usize {
 
         proof.instance.len(point, scalar)
             + proof.advice.len(point, scalar)
+            + proof.precommitted.len(point, scalar)
             + proof.lookups.len(point, scalar)
             + proof.equality.len(point, scalar)
     }
@@ -485,6 +525,7 @@ impl<G: PrimeGroup> From<MarginalProofSize<G>> for usize {
 pub struct ProofSize<G: PrimeGroup> {
     instance: ProofContribution,
     advice: ProofContribution,
+    precommitted: ProofContribution,
     fixed: ProofContribution,
     lookups: ProofContribution,
     equality: ProofContribution,
@@ -501,6 +542,7 @@ impl<G: PrimeGroup> From<ProofSize<G>> for usize {
 
         proof.instance.len(point, scalar)
             + proof.advice.len(point, scalar)
+            + proof.precommitted.len(point, scalar)
             + proof.fixed.len(point, scalar)
             + proof.lookups.len(point, scalar)
             + proof.equality.len(point, scalar)

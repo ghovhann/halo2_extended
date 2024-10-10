@@ -121,6 +121,7 @@ impl CircuitGates {
                             &|selector| format!("S{}", selector.0),
                             &|query| format!("F{}@{}", query.column_index, query.rotation.0),
                             &|query| format!("A{}@{}", query.column_index, query.rotation.0),
+                            &|query| format!("P{}@{}", query.column_index, query.rotation.0),
                             &|query| format!("I{}@{}", query.column_index, query.rotation.0),
                             &|a| {
                                 if a.contains(' ') {
@@ -164,6 +165,11 @@ impl CircuitGates {
                                     .collect()
                             },
                             &|query| {
+                                vec![format!("P{}@{}", query.column_index, query.rotation.0)]
+                                    .into_iter()
+                                    .collect()
+                            },
+                            &|query| {
                                 vec![format!("I{}@{}", query.column_index, query.rotation.0)]
                                     .into_iter()
                                     .collect()
@@ -190,6 +196,7 @@ impl CircuitGates {
             .flat_map(|gate| {
                 gate.polynomials().iter().map(|poly| {
                     poly.evaluate(
+                        &|_| (0, 0, 0),
                         &|_| (0, 0, 0),
                         &|_| (0, 0, 0),
                         &|_| (0, 0, 0),

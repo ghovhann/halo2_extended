@@ -60,6 +60,7 @@ pub(super) fn render_cell_layout(
                     "{}{}",
                     match column.column_type {
                         Any::Advice => "A",
+                        Any::Precommitted => "P",
                         Any::Fixed => "F",
                         Any::Instance => "I",
                     },
@@ -122,6 +123,14 @@ pub(super) fn expression_to_string<F: Field>(
                 .get(&query.rotation.0)
                 .unwrap()
                 .get(&(Any::Advice, query.column_index).into())
+                .unwrap()
+                .clone()
+        },
+        &|query| {
+            layout
+                .get(&query.rotation.0)
+                .unwrap()
+                .get(&(Any::Precommitted, query.column_index).into())
                 .unwrap()
                 .clone()
         },

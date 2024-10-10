@@ -65,6 +65,10 @@ impl<C: ColumnType> PartialOrd for Column<C> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Advice;
 
+/// A precommitted column
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Precommitted;
+
 /// A fixed column
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Fixed;
@@ -78,6 +82,8 @@ pub struct Instance;
 pub enum Any {
     /// An Advice variant
     Advice,
+    /// A Precommitted variant
+    Precommitted,
     /// A Fixed variant
     Fixed,
     /// An Instance variant
@@ -91,14 +97,23 @@ impl Ord for Any {
         match (self, other) {
             (Any::Instance, Any::Instance)
             | (Any::Advice, Any::Advice)
+            | (Any::Precommitted, Any::Precommitted)
             | (Any::Fixed, Any::Fixed) => std::cmp::Ordering::Equal,
-            // Across column types, sort Instance < Advice < Fixed.
+            
+            // Across column types, sort Instance < Advice < Precommitted < Fixed.
             (Any::Instance, Any::Advice)
+            | (Any::Instance, Any::Precommitted)
+            | (Any::Instance, Any::Fixed)
+            | (Any::Advice, Any::Precommitted)
             | (Any::Advice, Any::Fixed)
-            | (Any::Instance, Any::Fixed) => std::cmp::Ordering::Less,
-            (Any::Fixed, Any::Instance)
+            | (Any::Precommitted, Any::Fixed) => std::cmp::Ordering::Less,
+            
+            (Any::Advice, Any::Instance)
+            | (Any::Precommitted, Any::Instance)
+            | (Any::Fixed, Any::Instance)
+            | (Any::Precommitted, Any::Advice)
             | (Any::Fixed, Any::Advice)
-            | (Any::Advice, Any::Instance) => std::cmp::Ordering::Greater,
+            | (Any::Fixed, Any::Precommitted) => std::cmp::Ordering::Greater,
         }
     }
 }
@@ -110,6 +125,7 @@ impl PartialOrd for Any {
 }
 
 impl ColumnType for Advice {}
+impl ColumnType for Precommitted {}
 impl ColumnType for Fixed {}
 impl ColumnType for Instance {}
 impl ColumnType for Any {}
@@ -117,6 +133,12 @@ impl ColumnType for Any {}
 impl From<Advice> for Any {
     fn from(_: Advice) -> Any {
         Any::Advice
+    }
+}
+
+impl From<Precommitted> for Any {
+    fn from(_: Precommitted) -> Any {
+        Any::Precommitted
     }
 }
 
@@ -137,6 +159,15 @@ impl From<Column<Advice>> for Column<Any> {
         Column {
             index: advice.index(),
             column_type: Any::Advice,
+        }
+    }
+}
+
+impl From<Column<Precommitted>> for Column<Any> {
+    fn from(advice: Column<Precommitted>) -> Column<Any> {
+        Column {
+            index: advice.index(),
+            column_type: Any::Precommitted,
         }
     }
 }
@@ -169,6 +200,20 @@ impl TryFrom<Column<Any>> for Column<Advice> {
                 column_type: Advice,
             }),
             _ => Err("Cannot convert into Column<Advice>"),
+        }
+    }
+}
+
+impl TryFrom<Column<Any>> for Column<Precommitted> {
+    type Error = &'static str;
+
+    fn try_from(any: Column<Any>) -> Result<Self, Self::Error> {
+        match any.column_type() {
+            Any::Precommitted => Ok(Column {
+                index: any.index(),
+                column_type: Precommitted,
+            }),
+            _ => Err("Cannot convert into Column<Precommitted>"),
         }
     }
 }
@@ -290,6 +335,17 @@ pub struct AdviceQuery {
     pub(crate) rotation: Rotation,
 }
 
+/// Query of advice column at a certain relative location
+#[derive(Copy, Clone, Debug)]
+pub struct PrecommittedQuery {
+    /// Query index
+    pub(crate) index: usize,
+    /// Column index
+    pub(crate) column_index: usize,
+    /// Rotation of this query
+    pub(crate) rotation: Rotation,
+}
+
 /// Query of instance column at a certain relative location
 #[derive(Copy, Clone, Debug)]
 pub struct InstanceQuery {
@@ -379,6 +435,20 @@ pub trait Assignment<F: Field> {
         &mut self,
         annotation: A,
         column: Column<Advice>,
+        row: usize,
+        to: V,
+    ) -> Result<(), Error>
+    where
+        V: FnOnce() -> Value<VR>,
+        VR: Into<Assigned<F>>,
+        A: FnOnce() -> AR,
+        AR: Into<String>;
+
+    /// Assign an precommitted column value (witness)
+    fn assign_precommitted<V, VR, A, AR>(
+        &mut self,
+        annotation: A,
+        column: Column<Precommitted>,
         row: usize,
         to: V,
     ) -> Result<(), Error>
@@ -495,6 +565,8 @@ pub enum Expression<F> {
     Fixed(FixedQuery),
     /// This is an advice (witness) column queried at a certain relative location
     Advice(AdviceQuery),
+    /// This is a precommitted (witness) column queried at a certain relative location
+    Precommitted(PrecommittedQuery),
     /// This is an instance (external) column queried at a certain relative location
     Instance(InstanceQuery),
     /// This is a negated polynomial
@@ -517,6 +589,7 @@ impl<F: Field> Expression<F> {
         selector_column: &impl Fn(Selector) -> T,
         fixed_column: &impl Fn(FixedQuery) -> T,
         advice_column: &impl Fn(AdviceQuery) -> T,
+        precommitted_column: &impl Fn(PrecommittedQuery) -> T,
         instance_column: &impl Fn(InstanceQuery) -> T,
         negated: &impl Fn(T) -> T,
         sum: &impl Fn(T, T) -> T,
@@ -528,6 +601,7 @@ impl<F: Field> Expression<F> {
             Expression::Selector(selector) => selector_column(*selector),
             Expression::Fixed(query) => fixed_column(*query),
             Expression::Advice(query) => advice_column(*query),
+            Expression::Precommitted(query) => precommitted_column(*query),
             Expression::Instance(query) => instance_column(*query),
             Expression::Negated(a) => {
                 let a = a.evaluate(
@@ -535,6 +609,7 @@ impl<F: Field> Expression<F> {
                     selector_column,
                     fixed_column,
                     advice_column,
+                    precommitted_column,
                     instance_column,
                     negated,
                     sum,
@@ -549,6 +624,7 @@ impl<F: Field> Expression<F> {
                     selector_column,
                     fixed_column,
                     advice_column,
+                    precommitted_column,
                     instance_column,
                     negated,
                     sum,
@@ -560,6 +636,7 @@ impl<F: Field> Expression<F> {
                     selector_column,
                     fixed_column,
                     advice_column,
+                    precommitted_column,
                     instance_column,
                     negated,
                     sum,
@@ -574,6 +651,7 @@ impl<F: Field> Expression<F> {
                     selector_column,
                     fixed_column,
                     advice_column,
+                    precommitted_column,
                     instance_column,
                     negated,
                     sum,
@@ -585,6 +663,7 @@ impl<F: Field> Expression<F> {
                     selector_column,
                     fixed_column,
                     advice_column,
+                    precommitted_column,
                     instance_column,
                     negated,
                     sum,
@@ -599,6 +678,7 @@ impl<F: Field> Expression<F> {
                     selector_column,
                     fixed_column,
                     advice_column,
+                    precommitted_column,
                     instance_column,
                     negated,
                     sum,
@@ -617,6 +697,7 @@ impl<F: Field> Expression<F> {
             Expression::Selector(_) => 1,
             Expression::Fixed { .. } => 1,
             Expression::Advice { .. } => 1,
+            Expression::Precommitted { .. } => 1,
             Expression::Instance { .. } => 1,
             Expression::Negated(poly) => poly.degree(),
             Expression::Sum(a, b) => max(a.degree(), b.degree()),
@@ -635,6 +716,7 @@ impl<F: Field> Expression<F> {
         self.evaluate(
             &|_| false,
             &|selector| selector.is_simple(),
+            &|_| false,
             &|_| false,
             &|_| false,
             &|_| false,
@@ -662,6 +744,7 @@ impl<F: Field> Expression<F> {
                     None
                 }
             },
+            &|_| None,
             &|_| None,
             &|_| None,
             &|_| None,
@@ -695,6 +778,16 @@ impl<F: std::fmt::Debug> std::fmt::Debug for Expression<F> {
                 rotation,
             }) => f
                 .debug_struct("Advice")
+                .field("query_index", index)
+                .field("column_index", column_index)
+                .field("rotation", rotation)
+                .finish(),
+            Expression::Precommitted(PrecommittedQuery {
+                index,
+                column_index,
+                rotation,
+            }) => f
+                .debug_struct("Precommitted")
                 .field("query_index", index)
                 .field("column_index", column_index)
                 .field("rotation", rotation)
@@ -808,7 +901,7 @@ impl<F: Field> From<(&'static str, Expression<F>)> for Constraint<F> {
 
 impl<F: Field> From<Expression<F>> for Vec<Constraint<F>> {
     fn from(poly: Expression<F>) -> Self {
-        vec![Constraint { name: "", poly }]
+        vec![Constraint { name: "", poly: poly }]
     }
 }
 
@@ -934,6 +1027,7 @@ impl<F: Field> Gate<F> {
 pub struct ConstraintSystem<F: Field> {
     pub(crate) num_fixed_columns: usize,
     pub(crate) num_advice_columns: usize,
+    pub(crate) num_precommitted_columns: usize,
     pub(crate) num_instance_columns: usize,
     pub(crate) num_selectors: usize,
 
@@ -948,6 +1042,11 @@ pub struct ConstraintSystem<F: Field> {
     // identifying how many distinct queries it has
     // so far; should be same length as num_advice_columns.
     num_advice_queries: Vec<usize>,
+    pub(crate) precommitted_queries: Vec<(Column<Precommitted>, Rotation)>,
+    // Contains an integer for each precommitted column
+    // identifying how many distinct queries it has
+    // so far; should be same length as num_precommitted_columns.
+    num_precommitted_queries: Vec<usize>,
     pub(crate) instance_queries: Vec<(Column<Instance>, Rotation)>,
     pub(crate) fixed_queries: Vec<(Column<Fixed>, Rotation)>,
 
@@ -971,10 +1070,12 @@ pub struct ConstraintSystem<F: Field> {
 pub struct PinnedConstraintSystem<'a, F: Field> {
     num_fixed_columns: &'a usize,
     num_advice_columns: &'a usize,
+    num_precommitted_columns: &'a usize,
     num_instance_columns: &'a usize,
     num_selectors: &'a usize,
     gates: PinnedGates<'a, F>,
     advice_queries: &'a Vec<(Column<Advice>, Rotation)>,
+    precommitted_queries: &'a Vec<(Column<Precommitted>, Rotation)>,
     instance_queries: &'a Vec<(Column<Instance>, Rotation)>,
     fixed_queries: &'a Vec<(Column<Fixed>, Rotation)>,
     permutation: &'a permutation::Argument,
@@ -998,6 +1099,7 @@ impl<F: Field> Default for ConstraintSystem<F> {
         ConstraintSystem {
             num_fixed_columns: 0,
             num_advice_columns: 0,
+            num_precommitted_columns: 0,
             num_instance_columns: 0,
             num_selectors: 0,
             selector_map: vec![],
@@ -1005,6 +1107,8 @@ impl<F: Field> Default for ConstraintSystem<F> {
             fixed_queries: Vec::new(),
             advice_queries: Vec::new(),
             num_advice_queries: Vec::new(),
+            precommitted_queries: Vec::new(),
+            num_precommitted_queries: Vec::new(),
             instance_queries: Vec::new(),
             permutation: permutation::Argument::new(),
             lookups: Vec::new(),
@@ -1022,11 +1126,13 @@ impl<F: Field> ConstraintSystem<F> {
         PinnedConstraintSystem {
             num_fixed_columns: &self.num_fixed_columns,
             num_advice_columns: &self.num_advice_columns,
+            num_precommitted_columns: &self.num_precommitted_columns,
             num_instance_columns: &self.num_instance_columns,
             num_selectors: &self.num_selectors,
             gates: PinnedGates(&self.gates),
             fixed_queries: &self.fixed_queries,
             advice_queries: &self.advice_queries,
+            precommitted_queries: &self.precommitted_queries,
             instance_queries: &self.instance_queries,
             permutation: &self.permutation,
             lookups: &self.lookups,
@@ -1114,6 +1220,22 @@ impl<F: Field> ConstraintSystem<F> {
         index
     }
 
+    pub(crate) fn query_precommitted_index(&mut self, column: Column<Precommitted>, at: Rotation) -> usize {
+        // Return existing query, if it exists
+        for (index, precommitted_query) in self.precommitted_queries.iter().enumerate() {
+            if precommitted_query == &(column, at) {
+                return index;
+            }
+        }
+
+        // Make a new query
+        let index = self.precommitted_queries.len();
+        self.precommitted_queries.push((column, at));
+        self.num_precommitted_queries[column.index] += 1;
+
+        index
+    }
+
     fn query_instance_index(&mut self, column: Column<Instance>, at: Rotation) -> usize {
         // Return existing query, if it exists
         for (index, instance_query) in self.instance_queries.iter().enumerate() {
@@ -1132,6 +1254,7 @@ impl<F: Field> ConstraintSystem<F> {
     fn query_any_index(&mut self, column: Column<Any>, at: Rotation) -> usize {
         match column.column_type() {
             Any::Advice => self.query_advice_index(Column::<Advice>::try_from(column).unwrap(), at),
+            Any::Precommitted => self.query_precommitted_index(Column::<Precommitted>::try_from(column).unwrap(), at),
             Any::Fixed => self.query_fixed_index(Column::<Fixed>::try_from(column).unwrap()),
             Any::Instance => {
                 self.query_instance_index(Column::<Instance>::try_from(column).unwrap(), at)
@@ -1147,6 +1270,16 @@ impl<F: Field> ConstraintSystem<F> {
         }
 
         panic!("get_advice_query_index called for non-existent query");
+    }
+
+    pub(crate) fn get_precommitted_query_index(&self, column: Column<Precommitted>, at: Rotation) -> usize {
+        for (index, precommitted_query) in self.precommitted_queries.iter().enumerate() {
+            if precommitted_query == &(column, at) {
+                return index;
+            }
+        }
+
+        panic!("get_precommitted_query_index called for non-existent query");
     }
 
     pub(crate) fn get_fixed_query_index(&self, column: Column<Fixed>, at: Rotation) -> usize {
@@ -1173,6 +1306,10 @@ impl<F: Field> ConstraintSystem<F> {
         match column.column_type() {
             Any::Advice => self.get_advice_query_index(
                 Column::<Advice>::try_from(column).unwrap(),
+                Rotation::cur(),
+            ),
+            Any::Precommitted => self.get_precommitted_query_index(
+                Column::<Precommitted>::try_from(column).unwrap(),
                 Rotation::cur(),
             ),
             Any::Fixed => self
@@ -1315,6 +1452,7 @@ impl<F: Field> ConstraintSystem<F> {
                 },
                 &|query| Expression::Fixed(query),
                 &|query| Expression::Advice(query),
+                &|query| Expression::Precommitted(query),
                 &|query| Expression::Instance(query),
                 &|a| -a,
                 &|a, b| a + b,
@@ -1388,6 +1526,17 @@ impl<F: Field> ConstraintSystem<F> {
         tmp
     }
 
+    /// Allocate a new precommitted column
+    pub fn precommitted_column(&mut self) -> Column<Precommitted> {
+        let tmp = Column {
+            index: self.num_precommitted_columns,
+            column_type: Precommitted,
+        };
+        self.num_precommitted_columns += 1;
+        self.num_precommitted_queries.push(0);
+        tmp
+    }
+
     /// Allocate a new instance column
     pub fn instance_column(&mut self) -> Column<Instance> {
         let tmp = Column {
@@ -1434,8 +1583,13 @@ impl<F: Field> ConstraintSystem<F> {
     /// each of the prover's witness polynomials.
     pub fn blinding_factors(&self) -> usize {
         // All of the prover's advice columns are evaluated at no more than
-        let factors = *self.num_advice_queries.iter().max().unwrap_or(&1);
+        let factors_advice = *self.num_advice_queries.iter().max().unwrap_or(&1);
         // distinct points during gate checks.
+
+        // All of the prover's precommitted columns are evaluated at no more than
+        let factors_precommitted = *self.num_precommitted_queries.iter().max().unwrap_or(&1);
+        // distinct points during gate checks.
+        let factors = std::cmp::max(factors_advice, factors_precommitted);
 
         // - The permutation argument witness polynomials are evaluated at most 3 times.
         // - Each lookup argument has independent witness polynomials, and they are
@@ -1516,6 +1670,16 @@ impl<'a, F: Field> VirtualCells<'a, F> {
         })
     }
 
+    /// Query an precommitted column at a relative position
+    pub fn query_precommitted(&mut self, column: Column<Precommitted>, at: Rotation) -> Expression<F> {
+        self.queried_cells.push((column, at).into());
+        Expression::Precommitted(PrecommittedQuery {
+            index: self.meta.query_precommitted_index(column, at),
+            column_index: column.index,
+            rotation: at,
+        })
+    }
+
     /// Query an instance column at a relative position
     pub fn query_instance(&mut self, column: Column<Instance>, at: Rotation) -> Expression<F> {
         self.queried_cells.push((column, at).into());
@@ -1535,6 +1699,7 @@ impl<'a, F: Field> VirtualCells<'a, F> {
         let column = column.into();
         match column.column_type() {
             Any::Advice => self.query_advice(Column::<Advice>::try_from(column).unwrap(), at),
+            Any::Precommitted => self.query_precommitted(Column::<Precommitted>::try_from(column).unwrap(), at),
             Any::Fixed => {
                 if at != Rotation::cur() {
                     panic!("Fixed columns can only be queried at the current rotation");

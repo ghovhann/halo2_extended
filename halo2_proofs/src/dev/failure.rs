@@ -58,6 +58,7 @@ impl FailureLocation {
                     &|_| panic!("virtual selectors are removed during optimization"),
                     &|query| vec![cs.fixed_queries[query.index].0.into()],
                     &|query| vec![cs.advice_queries[query.index].0.into()],
+                    &|query| vec![cs.precommitted_queries[query.index].0.into()],
                     &|query| vec![cs.instance_queries[query.index].0.into()],
                     &|a| a,
                     &|mut a, mut b| {
@@ -419,6 +420,7 @@ fn render_lookup<F: Field>(
             &|_| panic!("no selectors in table expressions"),
             &|query| format!("F{}", query.column_index),
             &|_| panic!("no advice columns in table expressions"),
+            &|_| panic!("no precommitted columns in table expressions"),
             &|_| panic!("no instance columns in table expressions"),
             &|_| panic!("no negations in table expressions"),
             &|_, _| panic!("no sums in table expressions"),
@@ -474,6 +476,10 @@ fn render_lookup<F: Field>(
             &cell_value(
                 Any::Advice,
                 &util::load(n, row, &cs.advice_queries, &prover.advice),
+            ),
+            &cell_value(
+                Any::Precommitted,
+                &util::load(n, row, &cs.precommitted_queries, &prover.precommitted),
             ),
             &cell_value(
                 Any::Instance,

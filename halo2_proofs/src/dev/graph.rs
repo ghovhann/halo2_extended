@@ -4,7 +4,7 @@ use tabbycat::{AttrList, Edge, GraphBuilder, GraphType, Identity, StmtList};
 use crate::{
     circuit::Value,
     plonk::{
-        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed,
+        Advice, Precommitted, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed,
         FloorPlanner, Instance, Selector,
     },
 };
@@ -119,6 +119,24 @@ impl<F: Field> Assignment<F> for Graph {
         // Do nothing; we don't care about cells in this context.
         Ok(())
     }
+
+    fn assign_precommitted<V, VR, A, AR>(
+        &mut self,
+        _: A,
+        _: Column<Precommitted>,
+        _: usize,
+        _: V,
+    ) -> Result<(), Error>
+    where
+        V: FnOnce() -> Value<VR>,
+        VR: Into<Assigned<F>>,
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+        // Do nothing; we don't care about cells in this context.
+        Ok(())
+    }
+
 
     fn assign_fixed<V, VR, A, AR>(
         &mut self,

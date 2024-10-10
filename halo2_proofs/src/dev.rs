@@ -11,7 +11,7 @@ use crate::plonk::Assigned;
 use crate::{
     circuit,
     plonk::{
-        permutation, Advice, Any, Assignment, Circuit, Column, ConstraintSystem, Error, Expression,
+        permutation, Advice, Precommitted, Any, Assignment, Circuit, Column, ConstraintSystem, Error, Expression,
         Fixed, FloorPlanner, Instance, Selector,
     },
 };
@@ -284,6 +284,8 @@ pub struct MockProver<F: Field> {
     fixed: Vec<Vec<CellValue<F>>>,
     // The advice cells in the circuit, arranged as [column][row].
     advice: Vec<Vec<CellValue<F>>>,
+    // The precommitted cells in the circuit, arranged as [column][row].
+    precommitted: Vec<Vec<CellValue<F>>>,
     // The instance cells in the circuit, arranged as [column][row].
     instance: Vec<Vec<InstanceValue<F>>>,
 
@@ -394,6 +396,39 @@ impl<F: Field> Assignment<F> for MockProver<F> {
 
         *self
             .advice
+            .get_mut(column.index())
+            .and_then(|v| v.get_mut(row))
+            .ok_or(Error::BoundsFailure)? =
+            CellValue::Assigned(to().into_field().evaluate().assign()?);
+
+        Ok(())
+    }
+
+    fn assign_precommitted<V, VR, A, AR>(
+            &mut self,
+            annotation: A,
+            column: Column<Precommitted>,
+            row: usize,
+            to: V,
+        ) -> Result<(), Error>
+        where
+            V: FnOnce() -> circuit::Value<VR>,
+            VR: Into<Assigned<F>>,
+            A: FnOnce() -> AR,
+            AR: Into<String> 
+    {
+        
+        if !self.usable_rows.contains(&row) {
+            return Err(Error::not_enough_rows_available(self.k));
+        }
+
+        if let Some(region) = self.current_region.as_mut() {
+            region.update_extent(column.into(), row);
+            region.cells.push((column.into(), row));
+        }
+
+        *self
+            .precommitted
             .get_mut(column.index())
             .and_then(|v| v.get_mut(row))
             .ok_or(Error::BoundsFailure)? =
@@ -534,6 +569,17 @@ impl<F: Field + Ord> MockProver<F> {
             };
             cs.num_advice_columns
         ];
+        let precommitted = vec![
+            {
+                let mut column = vec![CellValue::Unassigned; n];
+                // Poison unusable rows.
+                for (i, cell) in column.iter_mut().enumerate().skip(usable_rows) {
+                    *cell = CellValue::Poison(i);
+                }
+                column
+            };
+            cs.num_precommitted_columns
+        ];
         let permutation = permutation::keygen::Assembly::new(n, &cs.permutation);
         let constants = cs.constants.clone();
 
@@ -545,6 +591,7 @@ impl<F: Field + Ord> MockProver<F> {
             current_region: None,
             fixed,
             advice,
+            precommitted,
             instance,
             selectors,
             permutation,
@@ -650,6 +697,7 @@ impl<F: Field + Ord> MockProver<F> {
                                 &|_| panic!("virtual selectors are removed during optimization"),
                                 &util::load(n, row, &self.cs.fixed_queries, &self.fixed),
                                 &util::load(n, row, &self.cs.advice_queries, &self.advice),
+                                &util::load(n, row, &self.cs.precommitted_queries, &self.precommitted),
                                 &util::load_instance(
                                     n,
                                     row,
@@ -680,6 +728,7 @@ impl<F: Field + Ord> MockProver<F> {
                                         poly,
                                         &util::load(n, row, &self.cs.fixed_queries, &self.fixed),
                                         &util::load(n, row, &self.cs.advice_queries, &self.advice),
+                                        &util::load(n, row, &self.cs.precommitted_queries, &self.precommitted),
                                         &util::load_instance(
                                             n,
                                             row,
@@ -725,6 +774,14 @@ impl<F: Field + Ord> MockProver<F> {
                                 let column_index = query.0.index();
                                 let rotation = query.1 .0;
                                 self.advice[column_index]
+                                    [(row as i32 + n + rotation) as usize % n as usize]
+                                    .into()
+                            },
+                            &|query| {
+                                let query = self.cs.precommitted_queries[query.index];
+                                let column_index = query.0.index();
+                                let rotation = query.1 .0;
+                                self.precommitted[column_index]
                                     [(row as i32 + n + rotation) as usize % n as usize]
                                     .into()
                             },
@@ -837,6 +894,7 @@ impl<F: Field + Ord> MockProver<F> {
                     .get(column)
                     .map(|c: &Column<Any>| match c.column_type() {
                         Any::Advice => self.advice[c.index()][row],
+                        Any::Precommitted => self.precommitted[c.index()][row],
                         Any::Fixed => self.fixed[c.index()][row],
                         Any::Instance => {
                             let cell: &InstanceValue<F> = &self.instance[c.index()][row];
@@ -927,7 +985,7 @@ mod tests {
     use crate::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
         plonk::{
-            Advice, Any, Circuit, Column, ConstraintSystem, Error, Expression, Selector,
+            Advice, Precommitted, Any, Circuit, Column, ConstraintSystem, Error, Expression, Selector,
             TableColumn,
         },
         poly::Rotation,

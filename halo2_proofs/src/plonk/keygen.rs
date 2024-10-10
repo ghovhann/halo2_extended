@@ -4,10 +4,11 @@ use std::ops::Range;
 
 use ff::{Field, FromUniformBytes};
 use group::Curve;
+// use maybe_rayon::vec;
 
 use super::{
     circuit::{
-        Advice, Any, Assignment, Circuit, Column, ConstraintSystem, Fixed, FloorPlanner, Instance,
+        Precommitted, Advice, Any, Assignment, Circuit, Column, ConstraintSystem, Fixed, FloorPlanner, Instance,
         Selector,
     },
     permutation, Assigned, Error, LagrangeCoeff, Polynomial, ProvingKey, VerifyingKey,
@@ -95,6 +96,23 @@ impl<F: Field> Assignment<F> for Assembly<F> {
         &mut self,
         _: A,
         _: Column<Advice>,
+        _: usize,
+        _: V,
+    ) -> Result<(), Error>
+    where
+        V: FnOnce() -> Value<VR>,
+        VR: Into<Assigned<F>>,
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+        // We only care about fixed columns here
+        Ok(())
+    }
+
+    fn assign_precommitted<V, VR, A, AR>(
+        &mut self,
+        _: A,
+        _: Column<Precommitted>,
         _: usize,
         _: V,
     ) -> Result<(), Error>
@@ -235,9 +253,20 @@ where
         .map(|poly| params.commit_lagrange(poly, Blind::default()).to_affine())
         .collect();
 
+    // let mut b_commitments = vec![];
+    // let mut i = 0;
+    // for gen_h in params.gens_h.iter() {
+    //     let mut commit = C::identity();
+    //     for j in 0..gen_h.len() {
+    //         commit = commit.add((gen_h[j] * domain.get_omega_powers_i(i)[j]).into()).into();
+    //     }
+    //     b_commitments.push(commit);
+    //     i += 1;
+    // }
     Ok(VerifyingKey::from_parts(
         domain,
         fixed_commitments,
+        // b_commitments,
         permutation_vk,
         cs,
     ))

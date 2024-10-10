@@ -57,6 +57,13 @@ struct CostOptions {
     advice: Vec<Poly>,
 
     #[options(
+        help = "An precommitted column with the given rotations. May be repeated.",
+        meta = "R[,R..]"
+    )]
+    precommitted: Vec<Poly>,
+
+
+    #[options(
         help = "An instance column with the given rotations. May be repeated.",
         meta = "R[,R..]"
     )]
@@ -183,6 +190,8 @@ struct Circuit {
     max_deg: usize,
     /// Number of advice columns.
     advice_columns: usize,
+    /// Number of precommitted columns.
+    precommitted_columns: usize,
     /// Number of lookup arguments.
     lookups: usize,
     /// Equality constraint permutation arguments.
@@ -207,6 +216,7 @@ impl From<CostOptions> for Circuit {
 
         let mut queries: Vec<_> = iter::empty()
             .chain(opts.advice.iter())
+            .chain(opts.precommitted.iter())
             .chain(opts.instance.iter())
             .chain(opts.fixed.iter())
             .cloned()
@@ -224,6 +234,7 @@ impl From<CostOptions> for Circuit {
             k: opts.k,
             max_deg,
             advice_columns: opts.advice.len(),
+            precommitted_columns: opts.precommitted.len(),
             lookups: opts.lookup.len(),
             permutations: opts.permutation,
             column_queries,
@@ -243,6 +254,7 @@ impl Circuit {
         // - 32 bytes (commitment) + 2 * 32 bytes (evals) per permutation argument
         // - 32 bytes (eval) per column per permutation argument
         let plonk = size(1, 0) * self.advice_columns
+            + size(1, 0) * self.precommitted_columns
             + size(3, 5) * self.lookups
             + self
                 .permutations

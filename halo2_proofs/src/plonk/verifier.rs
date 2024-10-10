@@ -122,6 +122,13 @@ pub fn verify_proof<
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let precommitted_commitments = (0..num_proofs)
+    .map(|_| -> Result<Vec<_>, _> {
+        // Hash the prover's precommitted commitments into the transcript
+        read_n_points(transcript, vk.cs.num_precommitted_columns)
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
     // Sample theta challenge for keeping lookup columns linearly independent
     let theta: ChallengeTheta<_> = transcript.squeeze_challenge_scalar();
 
@@ -178,6 +185,10 @@ pub fn verify_proof<
         .map(|_| -> Result<Vec<_>, _> { read_n_scalars(transcript, vk.cs.advice_queries.len()) })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let precommitted_evals = (0..num_proofs)
+    .map(|_| -> Result<Vec<_>, _> { read_n_scalars(transcript, vk.cs.precommitted_queries.len()) })
+    .collect::<Result<Vec<_>, _>>()?;
+
     let fixed_evals = read_n_scalars(transcript, vk.cs.fixed_queries.len())?;
 
     let vanishing = vanishing.evaluate_after_x(transcript)?;
@@ -219,10 +230,11 @@ pub fn verify_proof<
         // Compute the expected value of h(x)
         let expressions = advice_evals
             .iter()
+            .zip(precommitted_evals.iter())
             .zip(instance_evals.iter())
             .zip(permutations_evaluated.iter())
             .zip(lookups_evaluated.iter())
-            .flat_map(|(((advice_evals, instance_evals), permutation), lookups)| {
+            .flat_map(|((((advice_evals, precommitted_evals), instance_evals), permutation), lookups)| {
                 let fixed_evals = &fixed_evals;
                 std::iter::empty()
                     // Evaluate the circuit using the custom gates provided
@@ -233,6 +245,7 @@ pub fn verify_proof<
                                 &|_| panic!("virtual selectors are removed during optimization"),
                                 &|query| fixed_evals[query.index],
                                 &|query| advice_evals[query.index],
+                                &|query| precommitted_evals[query.index],
                                 &|query| instance_evals[query.index],
                                 &|a| -a,
                                 &|a, b| a + &b,
@@ -246,6 +259,7 @@ pub fn verify_proof<
                         &vk.cs.permutation,
                         &permutations_common,
                         advice_evals,
+                        precommitted_evals,
                         fixed_evals,
                         instance_evals,
                         l_0,
@@ -269,6 +283,7 @@ pub fn verify_proof<
                                     beta,
                                     gamma,
                                     advice_evals,
+                                    precommitted_evals,
                                     fixed_evals,
                                     instance_evals,
                                 )
@@ -285,13 +300,15 @@ pub fn verify_proof<
         .zip(instance_evals.iter())
         .zip(advice_commitments.iter())
         .zip(advice_evals.iter())
+        .zip(precommitted_commitments.iter())
+        .zip(precommitted_evals.iter())
         .zip(permutations_evaluated.iter())
         .zip(lookups_evaluated.iter())
         .flat_map(
             |(
                 (
-                    (((instance_commitments, instance_evals), advice_commitments), advice_evals),
-                    permutation,
+                    (((((instance_commitments, instance_evals), advice_commitments), advice_evals),
+                    precommitted_commitments), precommitted_evals), permutation,
                 ),
                 lookups,
             )| {
@@ -311,6 +328,15 @@ pub fn verify_proof<
                                 &advice_commitments[column.index()],
                                 vk.domain.rotate_omega(*x, at),
                                 advice_evals[query_index],
+                            )
+                        },
+                    ))
+                    .chain(vk.cs.precommitted_queries.iter().enumerate().map(
+                        move |(query_index, &(column, at))| {
+                            VerifierQuery::new_commitment(
+                                &precommitted_commitments[column.index()],
+                                vk.domain.rotate_omega(*x, at),
+                                precommitted_evals[query_index],
                             )
                         },
                     ))

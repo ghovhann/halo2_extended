@@ -101,6 +101,7 @@ impl<C: CurveAffine> Evaluated<C> {
         beta: ChallengeBeta<C>,
         gamma: ChallengeGamma<C>,
         advice_evals: &[C::Scalar],
+        precommitted_evals: &[C::Scalar],
         fixed_evals: &[C::Scalar],
         instance_evals: &[C::Scalar],
     ) -> impl Iterator<Item = C::Scalar> + 'a {
@@ -122,6 +123,7 @@ impl<C: CurveAffine> Evaluated<C> {
                             &|_| panic!("virtual selectors are removed during optimization"),
                             &|query| fixed_evals[query.index],
                             &|query| advice_evals[query.index],
+                            &|query| precommitted_evals[query.index],
                             &|query| instance_evals[query.index],
                             &|a| -a,
                             &|a, b| a + &b,
